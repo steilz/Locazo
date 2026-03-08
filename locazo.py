@@ -32,7 +32,7 @@ if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
 
 # ── DPI Awareness (must be set before any GUI operations) ─────────────
 try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
     try:
         ctypes.windll.user32.SetProcessDPIAware()
@@ -44,18 +44,89 @@ SAVE_DIR = Path.home() / "Pictures" / "Locazo"
 APP_NAME = "Locazo"
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
-# Win32 hotkey constants
+# ── Win32 Constants ───────────────────────────────────────────────────
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
+MOD_NOREPEAT = 0x4000
 VK_C = 0x43
 VK_ESCAPE = 0x1B
 VK_F11 = 0x7A
 WM_HOTKEY = 0x0312
+
 HOTKEY_ID_REGION = 1
 HOTKEY_ID_FULLSCREEN = 2
+HOTKEY_ID_ESC = 3
+
+SHCNE_CREATE = 0x00000002
+SHCNE_UPDATEDIR = 0x00001000
+SHCNF_PATHW = 0x0005
+SHCNF_FLUSH = 0x1000
+
+CF_DIB = 8
+GMEM_MOVEABLE = 0x0002
+
+# ── Win32 API Type Definitions ────────────────────────────────────────
+_u32 = ctypes.windll.user32
+_k32 = ctypes.windll.kernel32
+_shell32 = ctypes.windll.shell32
+_ole32 = ctypes.windll.ole32
+
+_u32.RegisterHotKey.argtypes = [ctypes.wintypes.HWND, ctypes.c_int, ctypes.wintypes.UINT, ctypes.wintypes.UINT]
+_u32.RegisterHotKey.restype = ctypes.wintypes.BOOL
+
+_u32.UnregisterHotKey.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+_u32.UnregisterHotKey.restype = ctypes.wintypes.BOOL
+
+_u32.GetMessageW.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG), ctypes.wintypes.HWND, ctypes.wintypes.UINT, ctypes.wintypes.UINT]
+_u32.GetMessageW.restype = ctypes.wintypes.BOOL
+
+_u32.PostThreadMessageW.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.UINT, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+_u32.PostThreadMessageW.restype = ctypes.wintypes.BOOL
+
+_u32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+_u32.OpenClipboard.restype = ctypes.wintypes.BOOL
+
+_u32.EmptyClipboard.argtypes = []
+_u32.EmptyClipboard.restype = ctypes.wintypes.BOOL
+
+_u32.SetClipboardData.argtypes = [ctypes.wintypes.UINT, ctypes.wintypes.HANDLE]
+_u32.SetClipboardData.restype = ctypes.wintypes.HANDLE
+
+_u32.CloseClipboard.argtypes = []
+_u32.CloseClipboard.restype = ctypes.wintypes.BOOL
+
+_k32.GlobalAlloc.argtypes = [ctypes.wintypes.UINT, ctypes.c_size_t]
+_k32.GlobalAlloc.restype = ctypes.c_void_p
+
+_k32.GlobalLock.argtypes = [ctypes.c_void_p]
+_k32.GlobalLock.restype = ctypes.c_void_p
+
+_k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+_k32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+
+_k32.GetCurrentThreadId.argtypes = []
+_k32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
+
+_shell32.ILCreateFromPathW.argtypes = [ctypes.wintypes.LPCWSTR]
+_shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+
+_shell32.ILFree.argtypes = [ctypes.c_void_p]
+_shell32.ILFree.restype = None
+
+_shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, ctypes.wintypes.UINT, ctypes.c_void_p, ctypes.wintypes.DWORD]
+_shell32.SHOpenFolderAndSelectItems.restype = ctypes.HRESULT
+
+_shell32.SHChangeNotify.argtypes = [ctypes.wintypes.LONG, ctypes.wintypes.UINT, ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR]
+_shell32.SHChangeNotify.restype = None
+
+_ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+_ole32.CoInitialize.restype = ctypes.HRESULT
+
+_ole32.CoUninitialize.argtypes = []
+_ole32.CoUninitialize.restype = None
 
 
-# ── Clipboard (pure ctypes, no pywin32 needed) ───────────────────────
+# ── Clipboard ────────────────────────────────────────────────────────
 def copy_image_to_clipboard(image: Image.Image):
     """Copy a PIL Image to the Windows clipboard as CF_DIB."""
     buf = io.BytesIO()
@@ -63,23 +134,35 @@ def copy_image_to_clipboard(image: Image.Image):
     data = buf.getvalue()[14:]  # Skip 14-byte BMP file header
     buf.close()
 
-    CF_DIB = 8
-    GMEM_MOVEABLE = 0x0002
-
-    k32 = ctypes.windll.kernel32
-    u32 = ctypes.windll.user32
-    k32.GlobalAlloc.restype = ctypes.c_void_p
-    k32.GlobalLock.restype = ctypes.c_void_p
-
-    if u32.OpenClipboard(0):
-        u32.EmptyClipboard()
-        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if _u32.OpenClipboard(None):
+        _u32.EmptyClipboard()
+        h = _k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if h:
-            p = k32.GlobalLock(h)
+            p = _k32.GlobalLock(h)
             ctypes.memmove(p, data, len(data))
-            k32.GlobalUnlock(h)
-            u32.SetClipboardData(CF_DIB, h)
-        u32.CloseClipboard()
+            _k32.GlobalUnlock(h)
+            _u32.SetClipboardData(CF_DIB, h)
+        _u32.CloseClipboard()
+
+
+# ── Explorer Integration ─────────────────────────────────────────────
+def show_in_explorer(path: Path):
+    """Open Explorer with the file selected. Reuses existing windows."""
+    # Notify shell so Explorer refreshes its view
+    _shell32.SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSH, str(path), None)
+    _shell32.SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSH, str(path.parent), None)
+
+    # Open folder and select file via Shell API
+    _ole32.CoInitialize(None)
+    try:
+        pidl = _shell32.ILCreateFromPathW(str(path))
+        if pidl:
+            try:
+                _shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
+            finally:
+                _shell32.ILFree(pidl)
+    finally:
+        _ole32.CoUninitialize()
 
 
 # ── Tray Icon ────────────────────────────────────────────────────────
@@ -88,13 +171,10 @@ def make_tray_icon() -> Image.Image:
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    # Blue background
     d.rounded_rectangle([4, 4, 60, 60], radius=12, fill=(66, 133, 244))
-    # Crosshair
     cx, cy = 32, 32
     d.line([(cx - 14, cy), (cx + 14, cy)], fill="white", width=2)
     d.line([(cx, cy - 14), (cx, cy + 14)], fill="white", width=2)
-    # Center circle
     d.ellipse([(cx - 5, cy - 5), (cx + 5, cy + 5)], outline="white", width=2)
     return img
 
@@ -111,13 +191,10 @@ class SelectionOverlay:
         """callback receives a PIL Image on success, or None on cancel."""
         self.callback = callback
 
-    # ── public ──
-
     def show(self):
         """Capture screen, display overlay, enter mainloop (blocking)."""
-        # Grab all monitors as one image
         with mss.mss() as sct:
-            mon = sct.monitors[0]  # virtual screen spanning all monitors
+            mon = sct.monitors[0]
             raw = sct.grab(mon)
             self.screenshot = Image.frombytes("RGB", raw.size, raw.rgb)
             self.mon_left = mon["left"]
@@ -127,8 +204,6 @@ class SelectionOverlay:
 
         self._build_ui()
         self.root.mainloop()
-
-    # ── UI setup ──
 
     def _build_ui(self):
         self.root = tk.Tk()
@@ -149,57 +224,52 @@ class SelectionOverlay:
         )
         self.canvas.pack()
 
-        # Background: the frozen screenshot
         self.photo = ImageTk.PhotoImage(self.screenshot)
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
 
-        # Dark overlay – 4 rectangles that form a frame around the selection
-        # Initially one big rect covers everything; during drag they reshape
         stip = "gray50"
         self.d_top = self.canvas.create_rectangle(
             0, 0, self.mon_w, self.mon_h, fill="black", outline="", stipple=stip
         )
-        self.d_bot = self.canvas.create_rectangle(
-            0, 0, 0, 0, fill="black", outline="", stipple=stip
-        )
-        self.d_lft = self.canvas.create_rectangle(
-            0, 0, 0, 0, fill="black", outline="", stipple=stip
-        )
-        self.d_rgt = self.canvas.create_rectangle(
-            0, 0, 0, 0, fill="black", outline="", stipple=stip
-        )
+        self.d_bot = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", outline="", stipple=stip)
+        self.d_lft = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", outline="", stipple=stip)
+        self.d_rgt = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", outline="", stipple=stip)
 
-        # Selection rectangle (blue border)
-        self.sel_rect = self.canvas.create_rectangle(
-            0, 0, 0, 0, outline="#00aaff", width=2
-        )
-
-        # Dimension label
-        self.dim_bg = self.canvas.create_rectangle(
-            0, 0, 0, 0, fill="#1a1a2e", outline=""
-        )
+        self.sel_rect = self.canvas.create_rectangle(0, 0, 0, 0, outline="#00aaff", width=2)
+        self.dim_bg = self.canvas.create_rectangle(0, 0, 0, 0, fill="#1a1a2e", outline="")
         self.dim_txt = self.canvas.create_text(
             0, 0, text="", fill="#00aaff", font=("Segoe UI", 10, "bold"), anchor="nw"
         )
 
-        # State
         self.sx = self.sy = 0
         self.dragging = False
         self._done = False
 
-        # Mouse bindings
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<ButtonPress-3>", lambda _: self._finish(None))
 
-        # ESC via GetAsyncKeyState polling (no hooks, no messages, anti-cheat safe)
-        self._poll_esc()
+        # ESC via RegisterHotKey on a dedicated thread (no hooks, anti-cheat safe)
+        self._esc_thread = threading.Thread(target=self._esc_hotkey_loop, daemon=True)
+        self._esc_thread.start()
 
         self.root.deiconify()
         self.root.focus_force()
 
-    # ── event handlers ──
+    def _esc_hotkey_loop(self):
+        """Register ESC as a hotkey and listen on a dedicated thread."""
+        self._esc_tid = _k32.GetCurrentThreadId()
+        _u32.RegisterHotKey(None, HOTKEY_ID_ESC, 0, VK_ESCAPE)
+        try:
+            msg = ctypes.wintypes.MSG()
+            while _u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID_ESC:
+                    if not self._done:
+                        self.root.after(0, lambda: self._finish(None))
+                    break
+        finally:
+            _u32.UnregisterHotKey(None, HOTKEY_ID_ESC)
 
     def _on_press(self, e):
         self.sx, self.sy = e.x, e.y
@@ -212,22 +282,18 @@ class SelectionOverlay:
         x1, y1 = min(self.sx, e.x), min(self.sy, e.y)
         x2, y2 = max(self.sx, e.x), max(self.sy, e.y)
 
-        # Update selection rectangle
         self.canvas.coords(self.sel_rect, x1, y1, x2, y2)
 
-        # Reshape dark overlay (4 rects around selection)
         w, h = self.mon_w, self.mon_h
-        self.canvas.coords(self.d_top, 0, 0, w, y1)        # above selection
-        self.canvas.coords(self.d_bot, 0, y2, w, h)        # below selection
-        self.canvas.coords(self.d_lft, 0, y1, x1, y2)      # left of selection
-        self.canvas.coords(self.d_rgt, x2, y1, w, y2)       # right of selection
+        self.canvas.coords(self.d_top, 0, 0, w, y1)
+        self.canvas.coords(self.d_bot, 0, y2, w, h)
+        self.canvas.coords(self.d_lft, 0, y1, x1, y2)
+        self.canvas.coords(self.d_rgt, x2, y1, w, y2)
 
-        # Dimension label
         pw, ph = x2 - x1, y2 - y1
         label = f"{pw} \u00d7 {ph}"
         self.canvas.itemconfigure(self.dim_txt, text=label)
 
-        # Position label near bottom-right of selection
         tx, ty = x2 + 8, y2 + 8
         if tx + 100 > w:
             tx = x1 - 100
@@ -235,7 +301,6 @@ class SelectionOverlay:
             ty = y1 - 24
 
         self.canvas.coords(self.dim_txt, tx, ty)
-        # Use actual text bbox for the background
         bbox = self.canvas.bbox(self.dim_txt)
         if bbox:
             self.canvas.coords(
@@ -253,20 +318,14 @@ class SelectionOverlay:
         else:
             self._finish(None)
 
-    def _poll_esc(self):
-        """Poll ESC key state via GetAsyncKeyState – no hooks, no messages."""
-        if self._done:
-            return
-        if ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000:
-            self._finish(None)
-            return
-        self.root.after(20, self._poll_esc)
-
     def _finish(self, result):
         """Clean up overlay and deliver result. Safe to call multiple times."""
         if self._done:
             return
         self._done = True
+        # Stop ESC hotkey thread
+        if hasattr(self, "_esc_tid"):
+            _u32.PostThreadMessageW(self._esc_tid, 0x0012, 0, 0)  # WM_QUIT
         self.root.destroy()
         self.callback(result)
 
@@ -279,8 +338,6 @@ class Locazo:
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
         self.capturing = False
         self.icon = None
-
-    # ── lifecycle ──
 
     def run(self):
         """Start tray icon and hotkey listeners (blocking)."""
@@ -308,26 +365,23 @@ class Locazo:
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
 
     def _hotkey_loop(self):
-        """Listen for global hotkeys via Win32 RegisterHotKey.
+        """Listen for global hotkeys via Win32 RegisterHotKey."""
+        mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
+        _u32.RegisterHotKey(None, HOTKEY_ID_REGION, mods, VK_C)
+        _u32.RegisterHotKey(None, HOTKEY_ID_FULLSCREEN, mods, VK_F11)
+        self._hotkey_tid = _k32.GetCurrentThreadId()
 
-        Only consumes the exact key combo – individual Ctrl/Shift pass through.
-        """
-        u32 = ctypes.windll.user32
-        mods = MOD_CONTROL | MOD_SHIFT
-        u32.RegisterHotKey(None, HOTKEY_ID_REGION, mods, VK_C)
-        u32.RegisterHotKey(None, HOTKEY_ID_FULLSCREEN, mods, VK_F11)
-        self._hotkey_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-
-        msg = ctypes.wintypes.MSG()
-        while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            if msg.message == WM_HOTKEY:
-                if msg.wParam == HOTKEY_ID_REGION:
-                    self._region()
-                elif msg.wParam == HOTKEY_ID_FULLSCREEN:
-                    self._fullscreen()
-
-        u32.UnregisterHotKey(None, HOTKEY_ID_REGION)
-        u32.UnregisterHotKey(None, HOTKEY_ID_FULLSCREEN)
+        try:
+            msg = ctypes.wintypes.MSG()
+            while _u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    if msg.wParam == HOTKEY_ID_REGION:
+                        self._region()
+                    elif msg.wParam == HOTKEY_ID_FULLSCREEN:
+                        self._fullscreen()
+        finally:
+            _u32.UnregisterHotKey(None, HOTKEY_ID_REGION)
+            _u32.UnregisterHotKey(None, HOTKEY_ID_FULLSCREEN)
 
     # ── capture actions ──
 
@@ -347,7 +401,7 @@ class Locazo:
 
     def _fullscreen(self, *_):
         with mss.mss() as sct:
-            raw = sct.grab(sct.monitors[1])  # primary monitor
+            raw = sct.grab(sct.monitors[1])
             self._save(Image.frombytes("RGB", raw.size, raw.rgb))
 
     # ── save & open ──
@@ -365,49 +419,15 @@ class Locazo:
             path.unlink()
             path = jpg
 
-        # Copy image to clipboard
         try:
             copy_image_to_clipboard(img)
         except Exception:
             pass
 
-        # Open folder and select the new file
         try:
-            self._show_in_explorer(path)
+            show_in_explorer(path)
         except Exception:
             pass
-
-    # ── explorer ──
-
-    @staticmethod
-    def _show_in_explorer(path: Path):
-        """Open folder & select file via Shell API. Reuses existing windows."""
-        shell32 = ctypes.windll.shell32
-        ole32 = ctypes.windll.ole32
-
-        ole32.CoInitialize(None)
-        try:
-            pidl_folder = ctypes.c_void_p()
-            pidl_file = ctypes.c_void_p()
-
-            shell32.SHParseDisplayName(
-                str(path.parent), None, ctypes.byref(pidl_folder), 0, None
-            )
-            shell32.SHParseDisplayName(
-                str(path), None, ctypes.byref(pidl_file), 0, None
-            )
-
-            if pidl_folder and pidl_file:
-                pidl_array = (ctypes.c_void_p * 1)(pidl_file)
-                shell32.SHOpenFolderAndSelectItems(
-                    pidl_folder, 1, pidl_array, 0
-                )
-
-            for pidl in (pidl_folder, pidl_file):
-                if pidl:
-                    ole32.CoTaskMemFree(pidl)
-        finally:
-            ole32.CoUninitialize()
 
     def _open_folder(self, *_):
         os.startfile(str(SAVE_DIR))
@@ -422,13 +442,11 @@ class Locazo:
             if self._autostart_enabled():
                 winreg.DeleteValue(key, APP_NAME)
             else:
-                # Always point to Locazo.exe next to this script/exe
                 if getattr(sys, "frozen", False):
                     exe = sys.executable
                 else:
                     exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Locazo.exe")
-                val = f'"{exe}"'
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, val)
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe}"')
             winreg.CloseKey(key)
         except Exception:
             pass
@@ -444,14 +462,9 @@ class Locazo:
         except (FileNotFoundError, OSError):
             return False
 
-    # ── quit ──
-
     def _quit(self, *_):
-        # Stop the RegisterHotKey message loop
         if hasattr(self, "_hotkey_tid"):
-            ctypes.windll.user32.PostThreadMessageW(
-                self._hotkey_tid, 0x0012, 0, 0  # WM_QUIT
-            )
+            _u32.PostThreadMessageW(self._hotkey_tid, 0x0012, 0, 0)
         if self.icon:
             self.icon.stop()
 
