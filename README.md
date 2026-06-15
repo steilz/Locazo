@@ -22,7 +22,7 @@ Gyazo uploads every screenshot to their cloud. You have to download your own scr
 | **Single instance** | Prevents multiple instances via Windows Mutex |
 | **Multi-monitor** | Captures across all connected displays |
 | **DPI aware** | Handles high-DPI / scaled displays correctly |
-| **Anti-cheat safe** | No low-level keyboard hooks — uses `RegisterHotKey` and `GetAsyncKeyState` only |
+| **Anti-cheat safe** | No low-level keyboard hooks — uses `RegisterHotKey` only |
 
 ## How it works
 
@@ -84,9 +84,9 @@ Left-clicking the tray icon triggers a region capture.
 ## Technical details
 
 - **Hotkeys** are registered via the Win32 `RegisterHotKey` API — only the exact key combination is captured, individual keys (Ctrl, Shift, C) pass through normally to all applications
-- **ESC detection** during capture uses `GetAsyncKeyState` polling — no hooks, no message interception
+- **ESC detection** during capture uses a dedicated `RegisterHotKey` listener thread (plus a tkinter `<Escape>` binding as fallback) — no hooks, no message interception
 - **Screen capture** uses the `mss` library for fast, multi-monitor aware grabbing
-- **Overlay** is a fullscreen `tkinter` window with the frozen screenshot as background, four dark stipple rectangles create the dimming effect around the selection
+- **Overlay** is a fullscreen `tkinter` window showing a pre-darkened copy of the frozen screen; the bright original shows through only inside the live selection, so dragging stays smooth (no per-frame stipple rendering)
 - **Clipboard** uses raw Win32 API via `ctypes` (`OpenClipboard`, `SetClipboardData` with `CF_DIB`) — no `pywin32` dependency
 - **Single instance** is enforced via a named Windows Mutex (`CreateMutexW`)
 - **DPI awareness** is set via `SetProcessDpiAwareness(2)` (per-monitor DPI aware)
