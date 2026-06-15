@@ -1,0 +1,51 @@
+name: Build & Release
+
+# Builds the Windows executable on a Windows runner and publishes it to a
+# GitHub Release whenever a version tag (vX.Y.Z) is pushed. Manual runs build
+# the exe as a downloadable artifact only (no release).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: python -m PyInstaller --onefile --noconsole --name Locazo --icon locazo.ico locazo.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Locazo-exe
+          path: dist/Locazo.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" "dist/Locazo.exe" \
+            --title "Locazo ${GITHUB_REF_NAME}" \
+            --generate-notes
