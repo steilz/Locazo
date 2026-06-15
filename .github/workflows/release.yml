@@ -1,14 +1,19 @@
 name: Build & Release
 
 # Builds the Windows executable on a Windows runner and publishes it to a
-# GitHub Release whenever a version tag (vX.Y.Z) is pushed. Manual runs build
-# the exe as a downloadable artifact only (no release).
+# GitHub Release. Triggered either by pushing a version tag (vX.Y.Z) or by a
+# manual run that takes the release tag as an input.
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v1.1.0)"
+        required: true
+        default: "v1.1.0"
 
 permissions:
   contents: write
@@ -41,11 +46,17 @@ jobs:
           path: dist/Locazo.exe
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" "dist/Locazo.exe" \
-            --title "Locazo ${GITHUB_REF_NAME}" \
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "Publishing release $TAG at ${GITHUB_SHA}"
+          gh release create "$TAG" "dist/Locazo.exe" \
+            --title "Locazo $TAG" \
+            --target "${GITHUB_SHA}" \
             --generate-notes
