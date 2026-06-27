@@ -2,9 +2,11 @@
 Locazo - Local Screenshot Tool for Linux Mint/X11.
 
 A lightweight, local-only Gyazo alternative. Same workflow as the Windows
-build (locazo.py), reimplemented for X11 desktops: region selection is
-delegated to the native gnome-screenshot selector, the tray lives in an
-Ayatana AppIndicator, and global hotkeys are grabbed via python-xlib.
+build (locazo.py), reimplemented natively for X11 desktops: the tray lives in
+an Ayatana AppIndicator, global hotkeys are grabbed via python-xlib, and region
+selection uses a GTK/Cairo overlay that mirrors the smooth Windows selector —
+the screen is grabbed once, shown pre-darkened, and the bright original shows
+through only inside the live selection (no per-frame full redraws).
 
 Hotkeys:
   Ctrl+Shift+C    - Region capture
@@ -14,7 +16,6 @@ Hotkeys:
 import fcntl
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,13 +25,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import cairo
 import gi
 from PIL import Image, ImageDraw
 
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3 as AppIndicator
-from gi.repository import Gtk
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 
 APP_NAME = "Locazo"
@@ -42,11 +46,14 @@ LOG_FILE = SAVE_DIR / "locazo.log"
 
 JPEG_THRESHOLD = 1_000_000  # bytes; convert PNG -> JPEG above this (like Gyazo)
 JPEG_QUALITY = 90
+DIM_ALPHA = 0.6  # opacity of the black wash over the un-selected area
+SEL_RGB = (0.0, 0.667, 1.0)  # selection outline / label colour (#00aaff)
+MIN_SELECTION = 5  # px; smaller drags are treated as a cancel
 
 HOTKEY_REGION = "region"
 HOTKEY_FULLSCREEN = "fullscreen"
 
-REQUIRED_COMMANDS = ("gnome-screenshot", "xclip", "xdg-open")
+REQUIRED_COMMANDS = ("xclip", "xdg-open")
 
 log = logging.getLogger("locazo")
 
@@ -70,15 +77,17 @@ def ensure_runtime() -> None:
     if os.environ.get("XDG_SESSION_TYPE") != "x11" or not os.environ.get("DISPLAY"):
         raise SystemExit("Locazo requires a Linux Mint X11 session.")
 
-    missing = [command for command in REQUIRED_COMMANDS if shutil.which(command) is None]
+    missing = [command for command in REQUIRED_COMMANDS if _which(command) is None]
     if missing:
-        packages = {
-            "gnome-screenshot": "gnome-screenshot",
-            "xclip": "xclip",
-            "xdg-open": "xdg-utils",
-        }
+        packages = {"xclip": "xclip", "xdg-open": "xdg-utils"}
         apt_packages = " ".join(packages[command] for command in missing)
         raise SystemExit(f"Missing system packages. Install them with: sudo apt install {apt_packages}")
+
+
+def _which(command: str) -> str | None:
+    import shutil
+
+    return shutil.which(command)
 
 
 def acquire_single_instance_lock() -> None:
@@ -191,6 +200,213 @@ class X11Hotkeys(threading.Thread):
         self.display.close()
 
 
+class RegionOverlay:
+    """Fullscreen GTK overlay for smooth interactive region selection.
+
+    A pre-darkened copy of the grabbed screen is painted as a static
+    background; the bright original shows through only inside the live
+    selection via a Cairo clip. Only the changed region is invalidated per
+    motion event, so dragging stays smooth even across multiple monitors.
+
+    ``on_result`` is invoked (on the GTK main thread) with a cropped
+    GdkPixbuf on success, or ``None`` on cancel.
+    """
+
+    def __init__(self, pixbuf: GdkPixbuf.Pixbuf, origin: tuple[int, int], on_result: Callable):
+        self.pixbuf = pixbuf
+        self.ox, self.oy = origin
+        self.w = pixbuf.get_width()
+        self.h = pixbuf.get_height()
+        self.on_result = on_result
+
+        self.bright = Gdk.cairo_surface_create_from_pixbuf(pixbuf, 1, None)
+        self.dim = Gdk.cairo_surface_create_from_pixbuf(pixbuf, 1, None)
+        ctx = cairo.Context(self.dim)
+        ctx.set_source_rgba(0, 0, 0, DIM_ALPHA)
+        ctx.paint()
+
+        self.start: tuple[float, float] | None = None
+        self.cur: tuple[float, float] | None = None
+        self.prev_damage: tuple[int, int, int, int] | None = None
+        self.done = False
+        self._seat = None
+
+        self._build()
+
+    def _build(self) -> None:
+        self.win = Gtk.Window()
+        self.win.set_decorated(False)
+        self.win.set_skip_taskbar_hint(True)
+        self.win.set_skip_pager_hint(True)
+        self.win.set_keep_above(True)
+        self.win.set_app_paintable(True)
+        self.win.set_resizable(False)
+        self.win.set_can_focus(True)
+        self.win.move(self.ox, self.oy)
+        self.win.set_default_size(self.w, self.h)
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_size_request(self.w, self.h)
+        self.area.set_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+        )
+        self.area.connect("draw", self._on_draw)
+        self.area.connect("button-press-event", self._on_press)
+        self.area.connect("button-release-event", self._on_release)
+        self.area.connect("motion-notify-event", self._on_motion)
+        self.win.add(self.area)
+
+        self.win.connect("key-press-event", self._on_key)
+        self.win.connect("realize", self._on_realize)
+        self.win.show_all()
+
+    def _on_realize(self, *_):
+        gwin = self.win.get_window()
+        display = self.win.get_display()
+        cursor = Gdk.Cursor.new_from_name(display, "crosshair")
+        seat = display.get_default_seat()
+        try:
+            seat.grab(gwin, Gdk.SeatCapabilities.ALL, True, cursor, None, None)
+            self._seat = seat
+        except Exception:
+            # Without an explicit grab the window still gets events while
+            # focused; just make sure it has the focus and the right cursor.
+            log.warning("Could not grab input seat for the selection overlay.")
+            if gwin is not None:
+                gwin.set_cursor(cursor)
+        self.win.present()
+
+    # ── geometry helpers ──────────────────────────────────────────────
+    def _norm(self) -> tuple[int, int, int, int]:
+        sx, sy = self.start
+        cx, cy = self.cur
+        x1, x2 = sorted((sx, cx))
+        y1, y2 = sorted((sy, cy))
+        x1 = max(0, int(x1))
+        y1 = max(0, int(y1))
+        x2 = min(self.w, int(x2))
+        y2 = min(self.h, int(y2))
+        return x1, y1, x2, y2
+
+    def _invalidate(self) -> None:
+        if self.start is None or self.cur is None:
+            self.area.queue_draw()
+            return
+        x1, y1, x2, y2 = self._norm()
+        margin = 170  # cover the outline and the dimension label
+        nx = max(0, x1 - margin)
+        ny = max(0, y1 - margin)
+        nxr = min(self.w, x2 + margin)
+        nyb = min(self.h, y2 + margin)
+        damage = (nx, ny, nxr - nx, nyb - ny)
+
+        if self.prev_damage:
+            px, py, pw, ph = self.prev_damage
+            ux, uy = min(nx, px), min(ny, py)
+            uxr, uyb = max(nxr, px + pw), max(nyb, py + ph)
+            self.area.queue_draw_area(ux, uy, uxr - ux, uyb - uy)
+        else:
+            self.area.queue_draw_area(*damage)
+        self.prev_damage = damage
+
+    # ── event handlers ────────────────────────────────────────────────
+    def _on_press(self, _area, event):
+        if event.button == 3:  # right-click cancels
+            self._finish(None)
+            return True
+        self.start = (event.x, event.y)
+        self.cur = (event.x, event.y)
+        self._invalidate()
+        return True
+
+    def _on_motion(self, _area, event):
+        if self.start is None:
+            return False
+        self.cur = (event.x, event.y)
+        self._invalidate()
+        return True
+
+    def _on_release(self, _area, event):
+        if event.button != 1 or self.start is None:
+            return False
+        self.cur = (event.x, event.y)
+        x1, y1, x2, y2 = self._norm()
+        if (x2 - x1) > MIN_SELECTION and (y2 - y1) > MIN_SELECTION:
+            crop = GdkPixbuf.Pixbuf.new_subpixbuf(self.pixbuf, x1, y1, x2 - x1, y2 - y1)
+            self._finish(crop)
+        else:
+            self._finish(None)
+        return True
+
+    def _on_key(self, _win, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self._finish(None)
+            return True
+        return False
+
+    def _on_draw(self, _area, cr):
+        cr.set_source_surface(self.dim, 0, 0)
+        cr.paint()
+
+        if self.start is None or self.cur is None:
+            return False
+
+        x1, y1, x2, y2 = self._norm()
+        if x2 - x1 < 1 or y2 - y1 < 1:
+            return False
+
+        cr.save()
+        cr.rectangle(x1, y1, x2 - x1, y2 - y1)
+        cr.clip()
+        cr.set_source_surface(self.bright, 0, 0)
+        cr.paint()
+        cr.restore()
+
+        cr.set_source_rgb(*SEL_RGB)
+        cr.set_line_width(2)
+        cr.rectangle(x1 + 1, y1 + 1, max(0, x2 - x1 - 2), max(0, y2 - y1 - 2))
+        cr.stroke()
+
+        self._draw_label(cr, x1, y1, x2, y2)
+        return False
+
+    def _draw_label(self, cr, x1, y1, x2, y2) -> None:
+        text = f"{x2 - x1} × {y2 - y1}"
+        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(13)
+        ext = cr.text_extents(text)
+
+        pad = 4
+        tx = x2 + 8
+        ty = y2 + 8 + ext.height
+        if tx + ext.width + pad > self.w:
+            tx = max(0, x1 - ext.width - 8)
+        if ty + pad > self.h:
+            ty = max(ext.height, y1 - 8)
+
+        cr.set_source_rgba(0.10, 0.10, 0.18, 0.85)
+        cr.rectangle(tx - pad, ty - ext.height - pad, ext.width + 2 * pad, ext.height + 2 * pad)
+        cr.fill()
+
+        cr.set_source_rgb(*SEL_RGB)
+        cr.move_to(tx, ty)
+        cr.show_text(text)
+
+    def _finish(self, result) -> None:
+        if self.done:
+            return
+        self.done = True
+        if self._seat is not None:
+            try:
+                self._seat.ungrab()
+            except Exception:
+                pass
+        self.win.destroy()
+        self.on_result(result)
+
+
 class Locazo:
     def __init__(self):
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,32 +459,58 @@ class Locazo:
         item.connect("activate", callback)
         menu.append(item)
 
+    # ── capture orchestration (all overlay work runs on the GTK thread) ─
     def capture_region(self, *_):
-        threading.Thread(target=self.capture, args=(True,), daemon=True).start()
+        GLib.idle_add(self._begin_region)
 
     def capture_fullscreen(self, *_):
-        threading.Thread(target=self.capture, args=(False,), daemon=True).start()
+        GLib.idle_add(self._begin_fullscreen)
 
-    def capture(self, area: bool) -> None:
-        # A non-blocking lock guards against region and fullscreen captures
-        # overlapping (e.g. a hotkey fired mid-capture).
+    def _begin_region(self) -> bool:
         if not self.capturing.acquire(blocking=False):
-            return
+            return False
+        try:
+            pixbuf, origin = self._grab_root()
+            RegionOverlay(pixbuf, origin, self._on_region_result)
+        except Exception:
+            log.exception("Region capture failed to start")
+            self.capturing.release()
+        return False
 
+    def _on_region_result(self, pixbuf) -> None:
+        if pixbuf is None:
+            self.capturing.release()
+            return
+        threading.Thread(target=self._save_and_release, args=(pixbuf,), daemon=True).start()
+
+    def _begin_fullscreen(self) -> bool:
+        if not self.capturing.acquire(blocking=False):
+            return False
+        try:
+            pixbuf = self._grab_primary()
+            threading.Thread(target=self._save_and_release, args=(pixbuf,), daemon=True).start()
+        except Exception:
+            log.exception("Fullscreen capture failed to start")
+            self.capturing.release()
+        return False
+
+    def _grab_root(self) -> tuple[GdkPixbuf.Pixbuf, tuple[int, int]]:
+        root = Gdk.get_default_root_window()
+        x, y, w, h = root.get_geometry()
+        pixbuf = Gdk.pixbuf_get_from_window(root, x, y, w, h)
+        return pixbuf, (x, y)
+
+    def _grab_primary(self) -> GdkPixbuf.Pixbuf:
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        geom = monitor.get_geometry()
+        root = Gdk.get_default_root_window()
+        return Gdk.pixbuf_get_from_window(root, geom.x, geom.y, geom.width, geom.height)
+
+    def _save_and_release(self, pixbuf: GdkPixbuf.Pixbuf) -> None:
         try:
             path = self.new_path()
-            command = ["gnome-screenshot", "--file", str(path)]
-            if area:
-                command.insert(1, "--area")
-
-            result = subprocess.run(command, check=False)
-            if result.returncode != 0 or not path.exists() or path.stat().st_size == 0:
-                # Cancelled selection or a failed grab -- not an error worth a stack trace.
-                path.unlink(missing_ok=True)
-                if result.returncode not in (0, 1):
-                    log.warning("gnome-screenshot exited with code %s", result.returncode)
-                return
-
+            pixbuf.savev(str(path), "png", [], [])
             final_path = self.convert_large_png(path)
             self.copy_to_clipboard(final_path)
             self.open_folder()

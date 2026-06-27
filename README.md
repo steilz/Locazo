@@ -7,7 +7,7 @@ Locazo ships two native implementations that share the same workflow and hotkeys
 | Platform | Entry point | Tech |
 |---|---|---|
 | **Windows 10/11** | `locazo.py` | Win32 (`ctypes`), `mss`, `tkinter` overlay, `pystray` |
-| **Linux (X11)** | `locazo_linux.py` | `gnome-screenshot`, `xclip`, GTK3 Ayatana AppIndicator, `python-xlib` |
+| **Linux (X11)** | `locazo_linux.py` | GTK3/GDK + Cairo overlay, `xclip`, Ayatana AppIndicator, `python-xlib` |
 
 > **Disclaimer:** This project was vibecoded with [Claude Code](https://claude.ai/claude-code). Every line of code was generated through AI-assisted development.
 
@@ -97,22 +97,24 @@ Requirements: Windows 10/11, Python 3.10+ (if running from source).
 
 ## Linux (X11)
 
-Reimplemented for X11 desktops (developed on Linux Mint Cinnamon). Region selection is delegated to the native `gnome-screenshot` selector, the tray lives in an Ayatana AppIndicator, and global hotkeys are grabbed via `python-xlib`.
+Reimplemented natively for X11 desktops (developed on Linux Mint Cinnamon). The tray lives in an Ayatana AppIndicator, global hotkeys are grabbed via `python-xlib`, and region selection uses a custom GTK/Cairo overlay that mirrors the smooth Windows selector — no `gnome-screenshot` dependency, no per-frame flicker.
 
 ### How it works
 
 1. Press `Ctrl+Shift+C`
-2. The native `gnome-screenshot` region selector appears
-3. Drag to select the area you want
+2. The screen freezes with a dark overlay
+3. Drag to select the area you want — the bright original shows through inside the selection, with live pixel dimensions
 4. Release — screenshot is saved, copied to the clipboard with `xclip`, and the folder opens
+
+Press `ESC` or right-click to cancel at any time.
 
 ### Installation
 
 Install the system dependencies, then the Python packages:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 \
-                 gnome-screenshot xclip xdg-utils
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+                 gir1.2-ayatanaappindicator3-0.1 xclip xdg-utils
 git clone https://github.com/steilz/Locazo.git
 cd Locazo
 pip install -r requirements-linux.txt
@@ -124,7 +126,9 @@ Enable **Autostart** from the tray menu to launch on login (writes `~/.config/au
 ### Technical details
 
 - **Hotkeys** are grabbed globally via `python-xlib` (`grab_key` on the root window), accounting for Lock/NumLock modifier combinations
-- **Region & fullscreen capture** shell out to `gnome-screenshot` (`--area` for region), so selection uses the desktop's native, smooth selector
+- **Screen capture** grabs the root window with GDK (`Gdk.pixbuf_get_from_window`) — multi-monitor aware, no external process
+- **Overlay** is a borderless GTK window: the grabbed screen is pre-darkened into a Cairo surface once, and the bright original is blitted only inside the live selection via a clip; only the changed region is invalidated per motion event, so dragging stays smooth across monitors
+- **Input** during selection is confined with a GDK seat grab (crosshair cursor); `ESC` or right-click cancels
 - **Clipboard** pipes the saved image into `xclip` with the correct MIME target (`image/png` or `image/jpeg`)
 - **File manager** opens via `xdg-open`
 - **Single instance** is enforced with an `fcntl` file lock on `/tmp/locazo.lock`
@@ -135,7 +139,7 @@ Enable **Autostart** from the tray menu to launch on login (writes `~/.config/au
 
 Python packages (`requirements-linux.txt`): `Pillow`, `python-xlib`.
 
-System packages: `python3-gi`, `gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`, `gnome-screenshot`, `xclip`, `xdg-utils`.
+System packages: `python3-gi`, `python3-gi-cairo`, `gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`, `xclip`, `xdg-utils`.
 
 Requirements: a Linux X11 session (Wayland is not supported), Python 3.10+.
 
