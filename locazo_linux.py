@@ -1,12 +1,10 @@
 """
-Locazo - Local Screenshot Tool for Linux Mint/X11.
+Locazo - Local Screenshot Tool for X11 and KDE Plasma Wayland.
 
-A lightweight, local-only Gyazo alternative. Same workflow as the Windows
-build (locazo.py), reimplemented natively for X11 desktops: the tray lives in
-an Ayatana AppIndicator, global hotkeys are grabbed via python-xlib, and region
-selection uses a GTK/Cairo overlay that mirrors the smooth Windows selector —
-the screen is grabbed once, shown pre-darkened, and the bright original shows
-through only inside the live selection (no per-frame full redraws).
+A lightweight, local-only Gyazo alternative. X11 uses GTK/Cairo selection,
+GDK capture and python-xlib hotkeys. KDE Plasma Wayland uses Spectacle for
+capture, wl-copy for the clipboard and the GlobalShortcuts portal. Both
+backends share local saving, image conversion and the AppIndicator tray.
 
 Hotkeys:
   Ctrl+Shift+C    - Region capture
@@ -34,7 +32,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3 as AppIndicator
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 
 APP_NAME = "Locazo"
@@ -53,7 +51,9 @@ MIN_SELECTION = 5  # px; smaller drags are treated as a cancel
 HOTKEY_REGION = "region"
 HOTKEY_FULLSCREEN = "fullscreen"
 
-REQUIRED_COMMANDS = ("xclip", "xdg-open")
+IS_WAYLAND = os.environ.get("XDG_SESSION_TYPE") == "wayland"
+REQUIRED_COMMANDS = (("spectacle", "wl-copy", "xdg-open") if IS_WAYLAND
+                     else ("xclip", "xdg-open"))
 
 log = logging.getLogger("locazo")
 
@@ -74,14 +74,18 @@ def configure_logging() -> None:
 
 
 def ensure_runtime() -> None:
-    if os.environ.get("XDG_SESSION_TYPE") != "x11" or not os.environ.get("DISPLAY"):
-        raise SystemExit("Locazo requires a Linux Mint X11 session.")
+    if IS_WAYLAND:
+        desktops = os.environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":")
+        if "KDE" not in desktops:
+            raise SystemExit("Locazo's Wayland backend currently requires KDE Plasma.")
+    elif not os.environ.get("DISPLAY"):
+        raise SystemExit("Locazo requires an X11 or KDE Plasma Wayland desktop session.")
 
     missing = [command for command in REQUIRED_COMMANDS if _which(command) is None]
     if missing:
-        packages = {"xclip": "xclip", "xdg-open": "xdg-utils"}
-        apt_packages = " ".join(packages[command] for command in missing)
-        raise SystemExit(f"Missing system packages. Install them with: sudo apt install {apt_packages}")
+        packages = {"xclip": "xclip", "xdg-open": "xdg-utils",
+                    "spectacle": "spectacle", "wl-copy": "wl-clipboard"}
+        raise SystemExit("Missing system packages: " + " ".join(packages[c] for c in missing))
 
 
 def _which(command: str) -> str | None:
@@ -108,7 +112,7 @@ def quote_desktop_exec(value: str) -> str:
 
 def current_command() -> str:
     script = Path(__file__).resolve()
-    return f"{quote_desktop_exec('/usr/bin/python3')} {quote_desktop_exec(str(script))}"
+    return f"{quote_desktop_exec(sys.executable)} {quote_desktop_exec(str(script))}"
 
 
 def write_tray_icon() -> Path:
@@ -411,19 +415,12 @@ class Locazo:
     def __init__(self):
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
         self.capturing = threading.Lock()
-        self.hotkeys: X11Hotkeys | None = None
+        self.hotkeys = None
+        self.shortcut_status = None
         self.indicator = None
         self.autostart_item: Gtk.CheckMenuItem | None = None
 
     def run(self) -> None:
-        self.hotkeys = X11Hotkeys(
-            {
-                HOTKEY_REGION: self.capture_region,
-                HOTKEY_FULLSCREEN: self.capture_fullscreen,
-            }
-        )
-        self.hotkeys.start()
-
         self.indicator = AppIndicator.Indicator.new(
             APP_NAME,
             str(write_tray_icon()),
@@ -431,14 +428,30 @@ class Locazo:
         )
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
+        callbacks = {HOTKEY_REGION: self.capture_region, HOTKEY_FULLSCREEN: self.capture_fullscreen}
+        if IS_WAYLAND:
+            from locazo_wayland import PortalHotkeys
+            try:
+                self.hotkeys = PortalHotkeys(callbacks, self.shortcut_status.set_label)
+                self.hotkeys.start()
+            except Exception:
+                log.exception("Could not initialize Wayland shortcuts")
+                self.shortcut_status.set_label("Shortcuts unavailable — use tray menu")
+        else:
+            self.hotkeys = X11Hotkeys(callbacks)
+            self.hotkeys.start()
         log.info("Locazo started; saving to %s", SAVE_DIR)
         Gtk.main()
 
     def build_menu(self) -> Gtk.Menu:
         menu = Gtk.Menu()
 
-        self.add_menu_item(menu, "Region capture    Ctrl+Shift+C", self.capture_region)
-        self.add_menu_item(menu, "Fullscreen    Ctrl+Shift+F11", self.capture_fullscreen)
+        self.add_menu_item(menu, "Region capture" if IS_WAYLAND else "Region capture    Ctrl+Shift+C", self.capture_region)
+        self.add_menu_item(menu, "Current monitor" if IS_WAYLAND else "Fullscreen    Ctrl+Shift+F11", self.capture_fullscreen)
+        if IS_WAYLAND:
+            self.shortcut_status = Gtk.MenuItem(label="Waiting for shortcut permission…")
+            self.shortcut_status.set_sensitive(False)
+            menu.append(self.shortcut_status)
         menu.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(menu, "Open folder", self.open_folder)
         menu.append(Gtk.SeparatorMenuItem())
@@ -461,10 +474,42 @@ class Locazo:
 
     # ── capture orchestration (all overlay work runs on the GTK thread) ─
     def capture_region(self, *_):
-        GLib.idle_add(self._begin_region)
+        if IS_WAYLAND:
+            self._begin_wayland(True)
+        else:
+            GLib.idle_add(self._begin_region)
 
     def capture_fullscreen(self, *_):
-        GLib.idle_add(self._begin_fullscreen)
+        if IS_WAYLAND:
+            self._begin_wayland(False)
+        else:
+            GLib.idle_add(self._begin_fullscreen)
+
+    def _begin_wayland(self, region: bool):
+        if not self.capturing.acquire(blocking=False):
+            return
+        threading.Thread(target=self._capture_wayland, args=(region,), daemon=True).start()
+
+    def _capture_wayland(self, region: bool):
+        from locazo_wayland import capture
+        log.info("Starting Wayland %s capture", "region" if region else "monitor")
+        try:
+            # A cancelled selection never leaves a partial image in the screenshot folder.
+            with tempfile.TemporaryDirectory(prefix="locazo-") as directory:
+                temporary = Path(directory) / "capture.png"
+                if not capture(temporary, region):
+                    return
+                path = self.new_path()
+                with Image.open(temporary) as image:
+                    image.save(path, "PNG")
+            final_path = self.convert_large_png(path)
+            self.copy_to_clipboard(final_path)
+            self.show_file(final_path)
+            log.info("Captured %s", final_path.name)
+        except Exception:
+            log.exception("Wayland capture failed")
+        finally:
+            self.capturing.release()
 
     def _begin_region(self) -> bool:
         if not self.capturing.acquire(blocking=False):
@@ -513,7 +558,7 @@ class Locazo:
             pixbuf.savev(str(path), "png", [], [])
             final_path = self.convert_large_png(path)
             self.copy_to_clipboard(final_path)
-            self.open_folder()
+            self.show_file(final_path)
             log.info("Captured %s", final_path.name)
         except Exception:
             log.exception("Capture failed")
@@ -538,17 +583,45 @@ class Locazo:
         mime_type = "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
         with path.open("rb") as file:
             subprocess.run(
-                ["xclip", "-selection", "clipboard", "-target", mime_type, "-i"],
+                (["wl-copy", "--type", mime_type] if IS_WAYLAND else
+                 ["xclip", "-selection", "clipboard", "-target", mime_type, "-i"]),
                 stdin=file,
                 check=True,
             )
 
+    def show_file(self, path: Path):
+        """Reveal the final saved image using the desktop's file manager."""
+        def finished(bus, result):
+            try:
+                bus.call_finish(result)
+            except GLib.Error:
+                log.warning("File selection unavailable; opening the screenshot folder", exc_info=True)
+                self.open_folder()
+
+        def reveal():
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                bus.call(
+                    "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1", "ShowItems",
+                    GLib.Variant("(ass)", ([path.resolve().as_uri()], "")),
+                    None, Gio.DBusCallFlags.NONE, 5000, None, finished,
+                )
+            except GLib.Error:
+                log.warning("File manager unavailable; opening the screenshot folder", exc_info=True)
+                self.open_folder()
+            return False
+
+        GLib.idle_add(reveal)
+
     def open_folder(self, *_):
-        subprocess.Popen(
-            ["xdg-open", str(SAVE_DIR)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        def launch():
+            try:
+                Gio.AppInfo.launch_default_for_uri(SAVE_DIR.as_uri(), None)
+            except GLib.Error:
+                log.exception("Could not open screenshot folder: %s", SAVE_DIR)
+            return False
+        GLib.idle_add(launch)
 
     def toggle_autostart(self, item: Gtk.CheckMenuItem):
         if not item.get_active():
@@ -582,6 +655,8 @@ class Locazo:
 
 
 if __name__ == "__main__":
+    GLib.set_prgname("io.github.steilz.Locazo")
+    GLib.set_application_name(APP_NAME)
     configure_logging()
     ensure_runtime()
     acquire_single_instance_lock()

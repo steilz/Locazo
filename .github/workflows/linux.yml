@@ -1,0 +1,17 @@
+name: Linux checks
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi python3-gi-cairo python3-pil python3-xlib gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+      - name: Run Linux tests
+        run: /usr/bin/python3 -m unittest discover -s tests -v
+      - name: Check Python syntax
+        run: /usr/bin/python3 -m py_compile locazo.py locazo_linux.py locazo_wayland.py install-linux.py
