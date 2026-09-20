@@ -159,7 +159,7 @@ Enable **Autostart** from the tray menu to launch on login (writes `~/.config/au
 - **Overlay** is a borderless GTK window: the grabbed screen is pre-darkened into a Cairo surface once, and the bright original is blitted only inside the live selection via a clip; only the changed region is invalidated per motion event, so dragging stays smooth across monitors
 - **Input** during selection is confined with a GDK seat grab (crosshair cursor); `ESC` or right-click cancels
 - **Clipboard** pipes the saved image into `xclip` with the correct MIME target (`image/png` or `image/jpeg`)
-- **File manager** opens via `xdg-open`
+- **File manager** opens via the desktop's default folder handler (GIO)
 - **Single instance** is enforced with an `fcntl` file lock on `/tmp/locazo.lock`
 - **Tray** uses GTK3 + Ayatana AppIndicator
 - **Logging** — failures are written to `~/Pictures/Locazo/locazo.log` instead of being silently swallowed

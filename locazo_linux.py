@@ -32,7 +32,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3 as AppIndicator
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 
 APP_NAME = "Locazo"
@@ -492,6 +492,7 @@ class Locazo:
 
     def _capture_wayland(self, region: bool):
         from locazo_wayland import capture
+        log.info("Starting Wayland %s capture", "region" if region else "monitor")
         try:
             # A cancelled selection never leaves a partial image in the screenshot folder.
             with tempfile.TemporaryDirectory(prefix="locazo-") as directory:
@@ -589,11 +590,13 @@ class Locazo:
             )
 
     def open_folder(self, *_):
-        subprocess.Popen(
-            ["xdg-open", str(SAVE_DIR)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        def launch():
+            try:
+                Gio.AppInfo.launch_default_for_uri(SAVE_DIR.as_uri(), None)
+            except GLib.Error:
+                log.exception("Could not open screenshot folder: %s", SAVE_DIR)
+            return False
+        GLib.idle_add(launch)
 
     def toggle_autostart(self, item: Gtk.CheckMenuItem):
         if not item.get_active():

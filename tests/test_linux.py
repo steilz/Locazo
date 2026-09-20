@@ -16,6 +16,7 @@ class CaptureTests(unittest.TestCase):
             path = Path(directory) / "test.png"
             def run(command, **kwargs):
                 self.assertIn("--region", command)
+                self.assertIn("--new-instance", command)
                 self.assertIn("--release-capture", command)
                 self.assertEqual(command[-2:], ["--output", str(path)])
                 path.write_bytes(b"image")
@@ -57,6 +58,30 @@ class CaptureTests(unittest.TestCase):
             app._capture_wayland(True)
         app.new_path.assert_not_called()
         app.capturing.release.assert_called_once()
+
+    def test_success_saves_copies_and_opens_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "saved.png"
+            app = object.__new__(linux.Locazo)
+            app.capturing = Mock()
+            app.new_path = Mock(return_value=path)
+            app.copy_to_clipboard = Mock()
+            app.open_folder = Mock()
+            def capture(temporary, region):
+                linux.Image.new("RGB", (10, 10)).save(temporary)
+                return True
+            with patch.object(wayland, "capture", side_effect=capture):
+                app._capture_wayland(True)
+            self.assertTrue(path.is_file())
+            app.copy_to_clipboard.assert_called_once_with(path)
+            app.open_folder.assert_called_once()
+            app.capturing.release.assert_called_once()
+
+    def test_folder_opens_with_desktop_default_handler(self):
+        app = object.__new__(linux.Locazo)
+        with patch.object(linux.GLib, "idle_add", side_effect=lambda fn: fn()), patch.object(linux.Gio.AppInfo, "launch_default_for_uri") as launch:
+            app.open_folder()
+            launch.assert_called_once_with(linux.SAVE_DIR.as_uri(), None)
 
     def test_wayland_requires_kde(self):
         with patch.object(linux, "IS_WAYLAND", True), patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "GNOME"}):

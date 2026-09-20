@@ -16,8 +16,10 @@ REQUEST = "org.freedesktop.portal.Request"
 
 def capture(path: Path, region: bool) -> bool:
     """Run KDE's selector; cancellation produces no output file."""
+    # A shared instance can acknowledge DBus activation before saving the image.
+    # Own the process so its exit means capture has finished (or was cancelled).
     result = subprocess.run(
-        ["spectacle", "--background", "--nonotify",
+        ["spectacle", "--new-instance", "--background", "--nonotify",
          "--region" if region else "--current",
          *(["--release-capture"] if region else []), "--output", str(path)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
