@@ -23,7 +23,7 @@ Gyazo uploads every screenshot to their cloud. You have to download your own scr
 | **Fullscreen capture** | `Ctrl+Shift+F11` — captures the screen instantly |
 | **Local storage** | Saves to `~/Pictures/Locazo/` — PNG by default, auto-converts to JPG if >1 MB |
 | **Clipboard** | Screenshot is copied to the clipboard automatically — just `Ctrl+V` anywhere |
-| **File manager** | Opens the screenshot folder after each capture |
+| **File manager** | Opens the screenshot folder and selects the saved image after each capture |
 | **System tray** | Runs silently in the background with a tray icon |
 | **Autostart** | Toggle launch-on-boot from the tray menu |
 | **Single instance** | Only one Locazo runs at a time |
@@ -129,7 +129,7 @@ The tray displays the shortcuts actually assigned by the desktop.
 
 On Wayland, Spectacle supplies the native region selector and captures the
 current monitor for fullscreen captures. Locazo saves the result, applies its
-usual PNG/JPEG conversion, copies it with `wl-copy`, and opens the output folder.
+usual PNG/JPEG conversion, copies it with `wl-copy`, and selects the saved image in the file manager.
 Cancelling the selection saves nothing. XWayland screen scraping is not used.
 Other Wayland desktops are not currently supported. Global shortcuts require a
 working GlobalShortcuts portal and the host Registry interface; if it is unavailable, use the tray menu.
@@ -159,7 +159,7 @@ Enable **Autostart** from the tray menu to launch on login (writes `~/.config/au
 - **Overlay** is a borderless GTK window: the grabbed screen is pre-darkened into a Cairo surface once, and the bright original is blitted only inside the live selection via a clip; only the changed region is invalidated per motion event, so dragging stays smooth across monitors
 - **Input** during selection is confined with a GDK seat grab (crosshair cursor); `ESC` or right-click cancels
 - **Clipboard** pipes the saved image into `xclip` with the correct MIME target (`image/png` or `image/jpeg`)
-- **File manager** opens via the desktop's default folder handler (GIO)
+- **File manager** selects the saved PNG/JPG through `org.freedesktop.FileManager1.ShowItems`; if unsupported, opens the folder through GIO
 - **Single instance** is enforced with an `fcntl` file lock on `/tmp/locazo.lock`
 - **Tray** uses GTK3 + Ayatana AppIndicator
 - **Logging** — failures are written to `~/Pictures/Locazo/locazo.log` instead of being silently swallowed

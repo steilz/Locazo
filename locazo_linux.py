@@ -504,7 +504,7 @@ class Locazo:
                     image.save(path, "PNG")
             final_path = self.convert_large_png(path)
             self.copy_to_clipboard(final_path)
-            self.open_folder()
+            self.show_file(final_path)
             log.info("Captured %s", final_path.name)
         except Exception:
             log.exception("Wayland capture failed")
@@ -558,7 +558,7 @@ class Locazo:
             pixbuf.savev(str(path), "png", [], [])
             final_path = self.convert_large_png(path)
             self.copy_to_clipboard(final_path)
-            self.open_folder()
+            self.show_file(final_path)
             log.info("Captured %s", final_path.name)
         except Exception:
             log.exception("Capture failed")
@@ -588,6 +588,31 @@ class Locazo:
                 stdin=file,
                 check=True,
             )
+
+    def show_file(self, path: Path):
+        """Reveal the final saved image using the desktop's file manager."""
+        def finished(bus, result):
+            try:
+                bus.call_finish(result)
+            except GLib.Error:
+                log.warning("File selection unavailable; opening the screenshot folder", exc_info=True)
+                self.open_folder()
+
+        def reveal():
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                bus.call(
+                    "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1", "ShowItems",
+                    GLib.Variant("(ass)", ([path.resolve().as_uri()], "")),
+                    None, Gio.DBusCallFlags.NONE, 5000, None, finished,
+                )
+            except GLib.Error:
+                log.warning("File manager unavailable; opening the screenshot folder", exc_info=True)
+                self.open_folder()
+            return False
+
+        GLib.idle_add(reveal)
 
     def open_folder(self, *_):
         def launch():

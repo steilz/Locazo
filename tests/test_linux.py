@@ -59,14 +59,14 @@ class CaptureTests(unittest.TestCase):
         app.new_path.assert_not_called()
         app.capturing.release.assert_called_once()
 
-    def test_success_saves_copies_and_opens_folder(self):
+    def test_success_saves_copies_and_selects_final_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "saved.png"
             app = object.__new__(linux.Locazo)
             app.capturing = Mock()
             app.new_path = Mock(return_value=path)
             app.copy_to_clipboard = Mock()
-            app.open_folder = Mock()
+            app.show_file = Mock()
             def capture(temporary, region):
                 linux.Image.new("RGB", (10, 10)).save(temporary)
                 return True
@@ -74,8 +74,30 @@ class CaptureTests(unittest.TestCase):
                 app._capture_wayland(True)
             self.assertTrue(path.is_file())
             app.copy_to_clipboard.assert_called_once_with(path)
-            app.open_folder.assert_called_once()
+            app.show_file.assert_called_once_with(path)
             app.capturing.release.assert_called_once()
+
+    def test_reveals_exact_file_with_escaped_uri(self):
+        app = object.__new__(linux.Locazo)
+        bus = Mock()
+        path = Path("/tmp/my screenshots/capture.jpg")
+        with patch.object(linux.GLib, "idle_add", side_effect=lambda fn: fn()), patch.object(linux.Gio, "bus_get_sync", return_value=bus):
+            app.show_file(path)
+        args = bus.call.call_args.args
+        self.assertEqual(args[3], "ShowItems")
+        self.assertEqual(args[4].unpack(), (["file:///tmp/my%20screenshots/capture.jpg"], ""))
+
+    def test_reveal_failure_falls_back_to_folder(self):
+        app = object.__new__(linux.Locazo)
+        app.open_folder = Mock()
+        bus = Mock()
+        bus.call_finish.side_effect = linux.GLib.Error("No file manager service")
+        with patch.object(linux.GLib, "idle_add", side_effect=lambda fn: fn()), patch.object(linux.Gio, "bus_get_sync", return_value=bus):
+            app.show_file(Path("/tmp/image.png"))
+        callback = bus.call.call_args.args[-1]
+        with self.assertLogs("locazo", level="WARNING"):
+            callback(bus, Mock())
+        app.open_folder.assert_called_once()
 
     def test_folder_opens_with_desktop_default_handler(self):
         app = object.__new__(linux.Locazo)
