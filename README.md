@@ -7,7 +7,7 @@ Locazo ships two native implementations that share the same workflow and hotkeys
 | Platform | Entry point | Tech |
 |---|---|---|
 | **Windows 10/11** | `locazo.py` | Win32 (`ctypes`), `mss`, `tkinter` overlay, `pystray` |
-| **Linux (X11)** | `locazo_linux.py` | GTK3/GDK + Cairo overlay, `xclip`, Ayatana AppIndicator, `python-xlib` |
+| **Linux (X11 / KDE Wayland)** | `locazo_linux.py` | GTK3 tray; X11: GDK/Cairo + `xclip`; KDE Wayland: Spectacle + `wl-copy` + shortcuts portal |
 
 > **Disclaimer:** This project was vibecoded with [Claude Code](https://claude.ai/claude-code). Every line of code was generated through AI-assisted development.
 
@@ -95,9 +95,9 @@ Requirements: Windows 10/11, Python 3.10+ (if running from source).
 
 ---
 
-## Linux (X11)
+## Linux (X11 and KDE Plasma Wayland)
 
-Reimplemented natively for X11 desktops (developed on Linux Mint Cinnamon). The tray lives in an Ayatana AppIndicator, global hotkeys are grabbed via `python-xlib`, and region selection uses a custom GTK/Cairo overlay that mirrors the smooth Windows selector — no `gnome-screenshot` dependency, no per-frame flicker.
+The X11 backend was developed on Linux Mint Cinnamon. The tray lives in an Ayatana AppIndicator, global hotkeys are grabbed via `python-xlib`, and region selection uses a custom GTK/Cairo overlay that mirrors the smooth Windows selector — no `gnome-screenshot` dependency, no per-frame flicker.
 
 ### How it works
 
@@ -108,7 +108,36 @@ Reimplemented natively for X11 desktops (developed on Linux Mint Cinnamon). The 
 
 Press `ESC` or right-click to cancel at any time.
 
-### Installation
+### CachyOS / Arch Linux (KDE Plasma Wayland)
+
+Install dependencies from the distribution repositories:
+
+```bash
+sudo pacman -S --needed python-gobject python-cairo python-pillow gtk3 \
+    libayatana-appindicator spectacle wl-clipboard xdg-utils \
+    xdg-desktop-portal xdg-desktop-portal-kde
+git clone https://github.com/steilz/Locazo.git
+cd Locazo
+python install-linux.py
+```
+
+Launch **Locazo** from the application menu. Keep the checkout in place: the
+launcher points to it. The first launch asks KDE to approve the global shortcuts;
+you can change the suggested `Ctrl+Shift+C` and `Ctrl+Shift+F11` combinations in
+that dialog. If you deny permission, captures still work from the tray menu.
+The tray displays the shortcuts actually assigned by the desktop.
+
+On Wayland, Spectacle supplies the native region selector and captures the
+current monitor for fullscreen captures. Locazo saves the result, applies its
+usual PNG/JPEG conversion, copies it with `wl-copy`, and opens the output folder.
+Cancelling the selection saves nothing. XWayland screen scraping is not used.
+Other Wayland desktops are not currently supported. Global shortcuts require a
+working GlobalShortcuts portal and the host Registry interface; if it is unavailable, use the tray menu.
+
+For an **X11** session on Arch/CachyOS, also install `python-xlib` and `xclip`.
+Enable login autostart using Locazo's tray menu.
+
+### Debian / Ubuntu / Mint (X11)
 
 Install the system dependencies, then the Python packages:
 
@@ -141,7 +170,9 @@ Python packages (`requirements-linux.txt`): `Pillow`, `python-xlib`.
 
 System packages: `python3-gi`, `python3-gi-cairo`, `gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`, `xclip`, `xdg-utils`.
 
-Requirements: a Linux X11 session (Wayland is not supported), Python 3.10+.
+Requirements: a Linux X11 session or KDE Plasma Wayland, Python 3.10+.
+
+Run Linux tests with `python -m unittest discover -s tests -v` after installing dependencies.
 
 ---
 
